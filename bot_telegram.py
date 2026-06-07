@@ -1,11 +1,16 @@
 import os
 import requests
+import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
 )
 from groq import Groq
+
+# Configuração de logs para você ver o erro real no painel do Render
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ── Variáveis de ambiente ──────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
@@ -21,7 +26,7 @@ PAYMENT_LINKS = {
         "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
         "⏳ 7 dias ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01n"
         "💎 Premium mensal ($14.99/mês): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04nn"
-        "Após o pagamento, volte aqui e envie /start para continuar."
+        "Após o pagamento, volte aqui e envie /start para continuing."
     ),
     "en": (
         "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
@@ -55,10 +60,20 @@ ERROS_HUMANIZADOS = {
 def ler_prompt(nome_arquivo: str) -> str:
     base = os.path.dirname(os.path.abspath(__file__))
     caminho = os.path.join(base, nome_arquivo)
+    
+    # Tentativa de ler com o nome exato
     if os.path.exists(caminho):
         with open(caminho, "r", encoding="utf-8") as f:
             return f.read()
-    return ""
+            
+    # Fallback caso o arquivo esteja em minúsculo no repositório do GitHub
+    caminho_minusculo = os.path.join(base, nome_arquivo.lower())
+    if os.path.exists(caminho_minusculo):
+        with open(caminho_minusculo, "r", encoding="utf-8") as f:
+            return f.read()
+            
+    logger.warning(f"Arquivo de prompt {nome_arquivo} não foi encontrado. Usando prompt genérico.")
+    return "Você é um conselheiro amoroso atencioso chamado {{conselheiro}}."
 
 PROMPTS = {
     "Luna": {
@@ -90,14 +105,16 @@ def verificar_acesso(email: str) -> dict:
     try:
         r = requests.get(f"{WEBHOOK_URL}/verificar", params={"email": email}, timeout=30)
         return r.json()
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erro ao verificar acesso: {e}")
         return {"ativo": True, "plano": "gratis", "mensagens": 0}
 
 def incrementar(email: str) -> dict:
     try:
         r = requests.post(f"{WEBHOOK_URL}/incrementar", json={"email": email}, timeout=30)
         return r.json()
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erro ao incrementar: {e}")
         return {"status": "ok"}
 
 def vincular_telegram(email: str, telegram_id: str):
@@ -115,8 +132,8 @@ def vincular_telegram(email: str, telegram_id: str):
             headers=headers,
             timeout=10
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Erro ao vincular Telegram: {e}")
 
 def mensagem_limite(lang: str) -> str:
     if lang == "pt":
@@ -146,6 +163,7 @@ def mensagem_expirado(lang: str) -> str:
 
 def construir_system_prompt(conselheiro: str, lang: str, nome: str, genero: str, pronomes: str) -> str:
     prompt = PROMPTS[conselheiro][lang]
+    prompt = prompt.replace("{{conselheiro}}", conselheiro)
     prompt = prompt.replace("{{nome_usuario}}", nome)
     prompt = prompt.replace("{{genero_usuario}}", genero)
     prompt = prompt.replace("{{pronomes_usuario}}", pronomes)
@@ -331,9 +349,9 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     lang = context.user_data.get("lang", "pt")
     email = context.user_data.get("email", "")
     conselheiro = context.user_data.get("conselheiro", "Luna")
-    nome = context.user_data["nome"]
-    genero = context.user_data["genero"]
-    pronomes = context.user_data["pronomes"]
+    nome = context.user_data.get("nome", "")
+    genero = context.user_data.get("genero", "")
+    pronomes = context.user_data.get("pronomes", "")
 
     acesso = verificar_acesso(email)
 
@@ -371,7 +389,8 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             historico = historico[-20:]
         context.user_data["historico"] = historico
 
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erro crítico na chamada da Groq para {conselheiro}: {e}")
         resposta = ERROS_HUMANIZADOS.get(conselheiro, ERROS_HUMANIZADOS["Luna"])[lang]
         if historico and historico[-1]["role"] == "user":
             historico.pop()
@@ -386,7 +405,7 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ── Servidor HTTP corrigido para não dar Timeout no Render ─────────────────────
+# ── Servidor HTTP ──────────────────────────────────────────────────────────────
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
