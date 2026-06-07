@@ -18,7 +18,7 @@ GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")
 WEBHOOK_URL     = os.environ.get("WEBHOOK_URL", "https://truelove-webhook.onrender.com")
 
 # Trocado para o modelo leve para limpar o limite diário e passar no limite por minuto
-GROQ_MODEL      = "llama-3.1-8b-instant"
+GROQ_MODEL      = "gemma2-9b-it"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
