@@ -32,7 +32,6 @@ PAYMENT_LINKS = {
 }
 
 # ── Respostas de Erro Humanizadas (Fallback) ──────────────────────────────────
-# Evita que o bot quebre o personagem ou use termos como "erro técnico"
 ERROS_HUMANIZADOS = {
     "Luna": {
         "pt": "Epa... Me perdi um pouquinho aqui nos meus pensamentos e não consegui te ouvir direito. Pode repetir o que você me disse?",
@@ -109,12 +108,15 @@ def vincular_telegram(email: str, telegram_id: str):
         "Authorization": f"Bearer {supabase_key}",
         "Content-Type": "application/json",
     }
-    requests.patch(
-        f"{supabase_url}/rest/v1/Usuarios?Email=eq.{email}",
-        json={"telegram_id": str(telegram_id)},
-        headers=headers,
-        timeout=10
-    )
+    try:
+        requests.patch(
+            f"{supabase_url}/rest/v1/Usuarios?Email=eq.{email}",
+            json={"telegram_id": str(telegram_id)},
+            headers=headers,
+            timeout=10
+        )
+    except Exception:
+        pass
 
 def mensagem_limite(lang: str) -> str:
     if lang == "pt":
@@ -188,8 +190,6 @@ async def email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await update.message.reply_text(mensagem_expirado(lang))
         elif motivo == "limite gratis atingido":
             await update.message.reply_text(mensagem_limite(lang))
-        else:
-            pass
 
     vincular_telegram(email, update.effective_user.id)
 
@@ -322,7 +322,6 @@ async def conselheiro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         saudacao_en = f"{nome}, I'm Theo. Here you say whatever you want, however it comes out. No nonsense, no judgment. What's on your mind?"
 
     context.user_data["historico"] = []
-
     saudacao = saudacao_pt if lang == "pt" else saudacao_en
     await update.message.reply_text(saudacao, reply_markup=ReplyKeyboardRemove())
     return CHAT
@@ -332,9 +331,9 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     lang = context.user_data.get("lang", "pt")
     email = context.user_data.get("email", "")
     conselheiro = context.user_data.get("conselheiro", "Luna")
-    nome = context.user_data.get("nome", "")
-    genero = context.user_data.get("genero", "")
-    pronomes = context.user_data.get("pronomes", "")
+    nome = context.user_data["nome"]
+    genero = context.user_data["genero"]
+    pronomes = context.user_data["pronomes"]
 
     acesso = verificar_acesso(email)
 
@@ -347,13 +346,13 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
 
     if acesso.get("plano") == "gratis":
-        resultado = incremento = incrementar(email)
+        resultado = incrementar(email)
         if resultado.get("status") == "limite_atingido":
             await update.message.reply_text(mensagem_limite(lang))
             return ConversationHandler.END
 
     historico = context.user_data.get("historico", [])
-    historico.append({"role": "user", "content": message := mensagem})
+    historico.append({"role": "user", "content": mensagem})
 
     system_prompt = construir_system_prompt(conselheiro, lang, nome, genero, pronomes)
 
@@ -367,16 +366,13 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         resposta = response.choices[0].message.content
         
-        # Só salva no histórico se a API respondeu com sucesso
         historico.append({"role": "assistant", "content": resposta})
         if len(historico) > 20:
             historico = historico[-20:]
         context.user_data["historico"] = historico
 
-    except Exception as e:
-        # Se der erro, puxamos a fala humanizada do conselheiro atual
+    except Exception:
         resposta = ERROS_HUMANIZADOS.get(conselheiro, ERROS_HUMANIZADOS["Luna"])[lang]
-        # Removemos a última mensagem do usuário do histórico para não travar a conversa no erro
         if historico and historico[-1]["role"] == "user":
             historico.pop()
         context.user_data["historico"] = historico
@@ -390,13 +386,14 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ── Servidor HTTP para manter o Render acordado ────────────────────────────────
+# ── Servidor HTTP corrigido para não dar Timeout no Render ─────────────────────
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"True Love Bot OK")
     def log_message(self, format, *args):
@@ -404,8 +401,11 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def iniciar_servidor():
     porta = int(os.environ.get("PORT", 8080))
-    servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
-    servidor.serve_forever()
+    try:
+        servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
+        servidor.serve_forever()
+    except Exception as e:
+        print(f"Erro no servidor HTTP: {e}")
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
