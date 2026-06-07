@@ -1,11 +1,18 @@
 import os
 import requests
+import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
 )
 from groq import Groq
+
+# ── Configuração de Auditoria e Logs ───────────────────────────────────────────
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ── Variáveis de ambiente ──────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
@@ -18,27 +25,37 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # ── Links de pagamento ─────────────────────────────────────────────────────────
 PAYMENT_LINKS = {
     "pt": (
-        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00\n"
-        "⏳ 7 dias ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01\n"
-        "💎 Premium mensal ($14.99/mês): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04\n\n"
+        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
+        "⏳ 7 dias ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01n"
+        "💎 Premium mensal ($14.99/mês): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04nn"
         "Após o pagamento, volte aqui e envie /start para continuar."
     ),
     "en": (
-        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00\n"
-        "⏳ 7-Day Pass ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01\n"
-        "💎 Monthly Premium ($14.99/month): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04\n\n"
+        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
+        "⏳ 7-Day Pass ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01n"
+        "💎 Monthly Premium ($14.99/month): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04nn"
         "After payment, come back here and send /start to continue."
     ),
 }
 
-# ── Prompts dos conselheiros ───────────────────────────────────────────────────
+# ── Prompts dos conselheiros (Blindagem de caminho e verificação) ──────────────
 def ler_prompt(nome_arquivo: str) -> str:
     base = os.path.dirname(os.path.abspath(__file__))
     caminho = os.path.join(base, nome_arquivo)
-    if os.path.exists(caminho):
+    
+    if not os.path.exists(caminho):
+        logger.error(f"Arquivo essencial de personalidade NÃO encontrado: {caminho}")
+        return ""
+        
+    try:
         with open(caminho, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
+            conteudo = f.read().strip()
+            if not conteudo:
+                logger.warning(f"O arquivo {nome_arquivo} foi lido, mas está totalmente vazio.")
+            return conteudo
+    except Exception as e:
+        logger.error(f"Erro crítico ao processar o arquivo {nome_arquivo}: {str(e)}")
+        return ""
 
 PROMPTS = {
     "Luna": {
@@ -59,6 +76,15 @@ PROMPTS = {
     },
 }
 
+# Auditoria de Inicialização - Garante que nenhuma persona suba zerada em produção
+for persona, idiomas in PROMPTS.items():
+    for idioma, texto in i.items() if (i := idiomas.items()) else []:
+        if not texto:
+            raise RuntimeError(
+                f"Erro fatal: O prompt da persona '{persona}' no idioma '{idioma}' falhou ao carregar "
+                f"ou está vazio na raiz do projeto. O bot não iniciará para evitar respostas corrompidas."
+            )
+
 # ── Estados do ConversationHandler ────────────────────────────────────────────
 (
     LANG, EMAIL, VERIFICAR, NOME, GENERO, PRONOMES,
@@ -70,30 +96,39 @@ def verificar_acesso(email: str) -> dict:
     try:
         r = requests.get(f"{WEBHOOK_URL}/verificar", params={"email": email}, timeout=10)
         return r.json()
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erro de conexão com o Webhook em verificar_acesso: {str(e)}")
         return {"ativo": False, "motivo": "erro"}
 
 def incrementar(email: str) -> dict:
     try:
         r = requests.post(f"{WEBHOOK_URL}/incrementar", json={"email": email}, timeout=10)
         return r.json()
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erro de conexão com o Webhook em incrementar: {str(e)}")
         return {"status": "erro"}
 
 def vincular_telegram(email: str, telegram_id: str):
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        logger.error("Variáveis de ambiente do Supabase ausentes.")
+        return
+        
     headers = {
         "apikey": supabase_key,
         "Authorization": f"Bearer {supabase_key}",
         "Content-Type": "application/json",
     }
-    requests.patch(
-        f"{supabase_url}/rest/v1/Usuarios?Email=eq.{email}",
-        json={"telegram_id": str(telegram_id)},
-        headers=headers,
-        timeout=10
-    )
+    try:
+        requests.patch(
+            f"{supabase_url}/rest/v1/Usuarios?Email=eq.{email}",
+            json={"telegram_id": str(telegram_id)},
+            headers=headers,
+            timeout=10
+        )
+    except Exception as e:
+        logger.error(f"Falha ao vincular ID do Telegram no Supabase: {str(e)}")
 
 def mensagem_limite(lang: str) -> str:
     if lang == "pt":
@@ -165,13 +200,12 @@ async def email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         motivo = acesso.get("motivo", "")
         if motivo == "expirado":
             await update.message.reply_text(mensagem_expirado(lang))
+            return EMAIL
         elif motivo == "limite gratis atingido":
             await update.message.reply_text(mensagem_limite(lang))
-        else:
-            # Novo usuário: tem 3 mensagens grátis
-            pass
+            return EMAIL
 
-    # Vincula telegram_id ao email
+    # Vincula telegram_id ao email de forma transparente
     vincular_telegram(email, update.effective_user.id)
 
     # Segue para onboarding
@@ -318,7 +352,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     genero = context.user_data.get("genero", "")
     pronomes = context.user_data.get("pronomes", "")
 
-    # Verificar acesso antes de cada resposta
+    # Verificar acesso antes de processar a resposta da IA
     acesso = verificar_acesso(email)
 
     if not acesso.get("ativo"):
@@ -329,18 +363,17 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text(mensagem_limite(lang))
         return ConversationHandler.END
 
-    # Incrementar contador (só para usuários gratuitos)
+    # Incrementar contador se for do plano grátis
     if acesso.get("plano") == "gratis":
         resultado = incrementar(email)
         if resultado.get("status") == "limite_atingido":
             await update.message.reply_text(mensagem_limite(lang))
             return ConversationHandler.END
 
-    # Construir histórico
     historico = context.user_data.get("historico", [])
     historico.append({"role": "user", "content": mensagem})
 
-    # Chamar Groq
+    # Injeção segura do system prompt com as variáveis preenchidas
     system_prompt = construir_system_prompt(conselheiro, lang, nome, genero, pronomes)
 
     try:
@@ -353,6 +386,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         resposta = response.choices[0].message.content
     except Exception as e:
+        logger.error(f"Erro na chamada da API do Groq: {str(e)}")
         if lang == "pt":
             resposta = "Desculpe, tive um problema técnico. Tente novamente em instantes."
         else:
@@ -360,7 +394,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     historico.append({"role": "assistant", "content": resposta})
 
-    # Limitar histórico a 20 mensagens para não estourar contexto
+    # Limitação inteligente da janela de contexto da conversa ativa
     if len(historico) > 20:
         historico = historico[-20:]
     context.user_data["historico"] = historico
@@ -389,11 +423,18 @@ class HealthHandler(BaseHTTPRequestHandler):
 def iniciar_servidor():
     porta = int(os.environ.get("PORT", 8080))
     servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
-    servidor.serve_forever()
+    try:
+        servidor.serve_forever()
+    except Exception as e:
+        logger.error(f"Erro no servidor de health check: {str(e)}")
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    # Inicia servidor HTTP em thread separada
+    if not TELEGRAM_TOKEN or not GROQ_API_KEY:
+        logger.critical("Variáveis de ambiente cruciais ausentes do sistema (TELEGRAM_TOKEN ou GROQ_API_KEY).")
+        return
+
+    # Inicia servidor HTTP em thread secundária
     t = threading.Thread(target=iniciar_servidor, daemon=True)
     t.start()
 
@@ -416,7 +457,7 @@ def main():
     )
 
     app.add_handler(conv)
-    print("Bot True Love AI iniciado.")
+    logger.info("Bot True Love AI totalmente operacional e aguardando chamadas.")
     app.run_polling()
 
 if __name__ == "__main__":
