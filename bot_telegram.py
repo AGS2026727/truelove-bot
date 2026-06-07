@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")
 WEBHOOK_URL     = os.environ.get("WEBHOOK_URL", "https://truelove-webhook.onrender.com")
-GROQ_MODEL      = "llama-3.3-70b-versatile"
+GROQ_MODEL      = "llama-3.1-8b-instant"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
