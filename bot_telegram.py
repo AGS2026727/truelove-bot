@@ -32,22 +32,30 @@ PAYMENT_LINKS = {
 }
 
 # ── Prompts dos conselheiros ───────────────────────────────────────────────────
+def ler_prompt(nome_arquivo: str) -> str:
+    base = os.path.dirname(os.path.abspath(__file__))
+    caminho = os.path.join(base, nome_arquivo)
+    if os.path.exists(caminho):
+        with open(caminho, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
 PROMPTS = {
     "Luna": {
-        "pt": open("/app/prompts/LUNA_PT.txt").read() if os.path.exists("/app/prompts/LUNA_PT.txt") else "",
-        "en": open("/app/prompts/LUNA_EN.txt").read() if os.path.exists("/app/prompts/LUNA_EN.txt") else "",
+        "pt": ler_prompt("LUNA_PORTUGUESE.txt"),
+        "en": ler_prompt("LUNA_ENGLISH.txt"),
     },
     "Kai": {
-        "pt": open("/app/prompts/KAI_PT.txt").read() if os.path.exists("/app/prompts/KAI_PT.txt") else "",
-        "en": open("/app/prompts/KAI_EN.txt").read() if os.path.exists("/app/prompts/KAI_EN.txt") else "",
+        "pt": ler_prompt("KAI_PORTUGUESE.txt"),
+        "en": ler_prompt("KAI_ENGLISH.txt"),
     },
     "Maya": {
-        "pt": open("/app/prompts/MAYA_PT.txt").read() if os.path.exists("/app/prompts/MAYA_PT.txt") else "",
-        "en": open("/app/prompts/MAYA_EN.txt").read() if os.path.exists("/app/prompts/MAYA_EN.txt") else "",
+        "pt": ler_prompt("MAYA_PORTUGUESE.txt"),
+        "en": ler_prompt("MAYA_ENGLISH.txt"),
     },
     "Theo": {
-        "pt": open("/app/prompts/THEO_PT.txt").read() if os.path.exists("/app/prompts/THEO_PT.txt") else "",
-        "en": open("/app/prompts/THEO_EN.txt").read() if os.path.exists("/app/prompts/THEO_EN.txt") else "",
+        "pt": ler_prompt("THEO_PORTUGUESE.txt"),
+        "en": ler_prompt("THEO_ENGLISH.txt"),
     },
 }
 
