@@ -18,7 +18,7 @@ GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")
 WEBHOOK_URL     = os.environ.get("WEBHOOK_URL", "https://truelove-webhook.onrender.com")
 
 # Modelo intermediário que possui 15.000 tokens por minuto (TPM) na cota grátis
-GROQ_MODEL      = "gemma2-9b-it"
+GROQ_MODEL      = "llama3-8b-8192"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
