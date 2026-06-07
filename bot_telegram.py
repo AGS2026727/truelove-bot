@@ -374,8 +374,29 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+# ── Servidor HTTP para manter o Render acordado ────────────────────────────────
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"True Love Bot OK")
+    def log_message(self, format, *args):
+        pass
+
+def iniciar_servidor():
+    porta = int(os.environ.get("PORT", 8080))
+    servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
+    servidor.serve_forever()
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
+    # Inicia servidor HTTP em thread separada
+    t = threading.Thread(target=iniciar_servidor, daemon=True)
+    t.start()
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     conv = ConversationHandler(
