@@ -78,7 +78,7 @@ PROMPTS = {
 
 # Auditoria de Inicialização - Garante que nenhuma persona suba zerada em produção
 for persona, idiomas in PROMPTS.items():
-    for idioma, texto in i.items() if (i := idiomas.items()) else []:
+    for idioma, texto in idiomas.items():
         if not texto:
             raise RuntimeError(
                 f"Erro fatal: O prompt da persona '{persona}' no idioma '{idioma}' falhou ao carregar "
@@ -205,10 +205,8 @@ async def email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await update.message.reply_text(mensagem_limite(lang))
             return EMAIL
 
-    # Vincula telegram_id ao email de forma transparente
     vincular_telegram(email, update.effective_user.id)
 
-    # Segue para onboarding
     if lang == "pt":
         await update.message.reply_text("Como você se chama?")
     else:
@@ -352,7 +350,6 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     genero = context.user_data.get("genero", "")
     pronomes = context.user_data.get("pronomes", "")
 
-    # Verificar acesso antes de processar a resposta da IA
     acesso = verificar_acesso(email)
 
     if not acesso.get("ativo"):
@@ -363,7 +360,6 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text(mensagem_limite(lang))
         return ConversationHandler.END
 
-    # Incrementar contador se for do plano grátis
     if acesso.get("plano") == "gratis":
         resultado = incrementar(email)
         if resultado.get("status") == "limite_atingido":
@@ -371,9 +367,8 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return ConversationHandler.END
 
     historico = context.user_data.get("historico", [])
-    historico.append({"role": "user", "content": mensagem})
+    historico.append({"role": "user", "content": message if (message := mensagem) else ""})
 
-    # Injeção segura do system prompt com as variáveis preenchidas
     system_prompt = construir_system_prompt(conselheiro, lang, nome, genero, pronomes)
 
     try:
@@ -394,7 +389,6 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     historico.append({"role": "assistant", "content": resposta})
 
-    # Limitação inteligente da janela de contexto da conversa ativa
     if len(historico) > 20:
         historico = historico[-20:]
     context.user_data["historico"] = historico
@@ -434,7 +428,6 @@ def main():
         logger.critical("Variáveis de ambiente cruciais ausentes do sistema (TELEGRAM_TOKEN ou GROQ_API_KEY).")
         return
 
-    # Inicia servidor HTTP em thread secundária
     t = threading.Thread(target=iniciar_servidor, daemon=True)
     t.start()
 
