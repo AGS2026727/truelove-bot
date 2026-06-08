@@ -21,7 +21,7 @@ GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")
 WEBHOOK_URL     = os.environ.get("WEBHOOK_URL", "https://truelove-webhook.onrender.com")
 
 # Modelo estável com alta cota diária e por minuto (TPM)
-GROQ_MODEL      = "llama3-8b-8192"
+GROQ_MODEL      = "mixtral-8x7b-32768"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
