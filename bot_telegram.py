@@ -2,7 +2,6 @@ import os
 import requests
 import logging
 import sys
-import threading
 import asyncio
 from aiohttp import web
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -29,15 +28,15 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # ── Links de pagamento ─────────────────────────────────────────────────────────
 PAYMENT_LINKS = {
     "pt": (
-        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
-        "⏳ 7 dias ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01n"
-        "💎 Premium mensal ($14.99/mês): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04nn"
-        "Após o pagamento, volte aqui e envie /start para continuar."
+        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00\n"
+        "⏳ 7 dias ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01\n"
+        "💎 Premium mensal ($14.99/mês): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04\n\n"
+        "Após o pagamento, volte aqui e envie /start para continuing."
     ),
     "en": (
-        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
-        "⏳ 7-Day Pass ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01n"
-        "💎 Monthly Premium ($14.99/month): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04nn"
+        "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00\n"
+        "⏳ 7-Day Pass ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01\n"
+        "💎 Monthly Premium ($14.99/month): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04\n\n"
         "After payment, come back here and send /start to continue."
     ),
 }
@@ -159,7 +158,6 @@ def construir_system_prompt(conselheiro: str, lang: str, nome: str, genero: str,
         prompt = prompt.replace("{{genero_usuario}}", genero)
         prompt = prompt.replace("{{pronomes_usuario}}", pronomes)
         
-        # Trava anti-TPM para não quebrar a cota de tokens com prompts gigantescos
         if len(prompt) > 2500:
             if lang == "pt":
                 return f"Você é {conselheiro}, um(a) conselheiro(a) amoroso(a) empático(a), focado(a) em ajudar {nome} ({pronomes}). Seja breve, acolhedor(a) e responda em português."
@@ -323,8 +321,6 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     try:
         await update.message.chat.send_action("typing")
-        
-        # Envia apenas a mensagem do turno atual para economizar tokens por minuto
         historico_minimo = [{"role": "user", "content": mensagem}]
 
         response = groq_client.chat.completions.create(
@@ -343,7 +339,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     except Exception as e:
         logger.error(f"Erro crítico na chamada da Groq para {conselheiro}: {e}")
         
-        # LINHA DE DIAGNÓSTICO: Entrega o erro cru da Groq direto no celular pra matarmos a charada
+        # LINHA DE DIAGNÓSTICO: Mostra o erro real se a Groq chiar
         await update.message.reply_text(f"⚠️ Erro Técnico: {str(e)}")
         
         resposta = ERROS_HUMANIZADOS.get(conselheiro, ERROS_HUMANIZADOS["Luna"])[lang]
@@ -361,15 +357,6 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # ── Servidor de Health Check Assíncrono ───────────────────────────────────────
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"True Love Bot OK")
-    def log_message(self, format, *args):
-        pass
-
 async def health_check(request):
     return web.Response(text="True Love Bot OK")
 
@@ -405,7 +392,6 @@ async def iniciar_tudo():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", porta)
     
-    # Liga o servidor HTTP
     await site.start()
     print(f"Servidor de Health Check ativo na porta {porta}")
 
@@ -415,7 +401,6 @@ async def iniciar_tudo():
     await app.start()
     print("Bot True Love AI totalmente iniciado e ouvindo.")
 
-    # Mantém o loop rodando por tempo indeterminado
     try:
         while True:
             await asyncio.sleep(3600)
