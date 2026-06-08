@@ -3,7 +3,8 @@ import requests
 import logging
 import sys
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import asyncio
+from aiohttp import web
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -31,7 +32,7 @@ PAYMENT_LINKS = {
         "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
         "⏳ 7 dias ($9.99): https://buy.stripe.com/dRmeVd98tep49KM4TK3oA01n"
         "💎 Premium mensal ($14.99/mês): https://buy.stripe.com/6oU6oH0BXdl06yA1Hy3oA04nn"
-        "Após o pagamento, volte aqui e envie /start para continuing."
+        "Após o pagamento, volte aqui e envie /start para continuar."
     ),
     "en": (
         "🔥 Express 24h ($4.99): https://buy.stripe.com/7sYcN5fwR5Sy8GIfyo3oA00n"
@@ -158,6 +159,7 @@ def construir_system_prompt(conselheiro: str, lang: str, nome: str, genero: str,
         prompt = prompt.replace("{{genero_usuario}}", genero)
         prompt = prompt.replace("{{pronomes_usuario}}", pronomes)
         
+        # Trava anti-TPM para não quebrar a cota de tokens com prompts gigantescos
         if len(prompt) > 2500:
             if lang == "pt":
                 return f"Você é {conselheiro}, um(a) conselheiro(a) amoroso(a) empático(a), focado(a) em ajudar {nome} ({pronomes}). Seja breve, acolhedor(a) e responda em português."
@@ -288,12 +290,13 @@ async def conselheiro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(saudacao, reply_markup=ReplyKeyboardRemove())
     return CHAT
 
+# ── Chat Handler Otimizado ────────────────────────────────────────────────────
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     mensagem = update.message.text
     lang = context.user_data.get("lang", "pt")
     email = context.user_data.get("email", "")
     conselheiro = context.user_data.get("conselheiro", "Luna")
-    nome = context.user_data["nome"]
+    nome = context.user_data.get("nome", "")
     genero = context.user_data.get("genero", "")
     pronomes = context.user_data.get("pronomes", "")
 
@@ -320,6 +323,8 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     try:
         await update.message.chat.send_action("typing")
+        
+        # Envia apenas a mensagem do turno atual para economizar tokens por minuto
         historico_minimo = [{"role": "user", "content": mensagem}]
 
         response = groq_client.chat.completions.create(
@@ -337,6 +342,10 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     except Exception as e:
         logger.error(f"Erro crítico na chamada da Groq para {conselheiro}: {e}")
+        
+        # LINHA DE DIAGNÓSTICO: Entrega o erro cru da Groq direto no celular pra matarmos a charada
+        await update.message.reply_text(f"⚠️ Erro Técnico: {str(e)}")
+        
         resposta = ERROS_HUMANIZADOS.get(conselheiro, ERROS_HUMANIZADOS["Luna"])[lang]
         if historico and historico[-1]["role"] == "user":
             historico.pop()
@@ -351,7 +360,7 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ── Servidor de Health Check em Thread Separada ──────────────────────────────
+# ── Servidor de Health Check Assíncrono ───────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -359,51 +368,70 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"True Love Bot OK")
     def log_message(self, format, *args):
-        pass  # Silencia requisições HTTP para limpar logs
+        pass
 
-def iniciar_servidor_health():
+async def health_check(request):
+    return web.Response(text="True Love Bot OK")
+
+# ── Inicialização Unificada (Fluxo Único Sem Threads) ─────────────────────────
+async def iniciar_tudo():
+    # 1. Configura e prepara o Bot do Telegram
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            LANG:        [MessageHandler(filters.TEXT & ~filters.COMMAND, lang_handler)],
+            EMAIL:       [MessageHandler(filters.TEXT & ~filters.COMMAND, email_handler)],
+            NOME:        [MessageHandler(filters.TEXT & ~filters.COMMAND, nome_handler)],
+            GENERO:      [MessageHandler(filters.TEXT & ~filters.COMMAND, genero_handler)],
+            PRONOMES:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pronomes_handler)],
+            TEMA:        [MessageHandler(filters.TEXT & ~filters.COMMAND, tema_handler)],
+            CONSELHEIRO: [MessageHandler(filters.TEXT & ~filters.COMMAND, conselheiro_handler)],
+            CHAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("cancel", cancelar)],
+        allow_reentry=True,
+    )
+
+    app.add_handler(conv)
+
+    # 2. Configura o Servidor Web de Health Check na mesma malha assíncrona
+    web_app = web.Application()
+    web_app.router.add_get("/", health_check)
+    
     porta = int(os.environ.get("PORT", 10000))
-    try:
-        servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
-        print(f"Servidor de Health Check ativo na porta {porta}")
-        servidor.serve_forever()
-    except Exception as e:
-        logger.error(f"Erro no servidor de Health Check: {e}")
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", porta)
+    
+    # Liga o servidor HTTP
+    await site.start()
+    print(f"Servidor de Health Check ativo na porta {porta}")
 
-# ── Execução Principal (Fluxo Unificado) ───────────────────────────────────────
+    # 3. Inicia o Bot do Telegram dentro do mesmo loop assíncrono
+    await app.initialize()
+    await app.updater.start_polling()
+    await app.start()
+    print("Bot True Love AI totalmente iniciado e ouvindo.")
+
+    # Mantém o loop rodando por tempo indeterminado
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        print("Encerrando serviços...")
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        await runner.cleanup()
+
 def main():
-    # 1. Abre a resposta de porta em segundo plano para o Render dar "Live" instantâneo
-    t = threading.Thread(target=iniciar_servidor_health, daemon=True)
-    t.start()
-
-    # 2. Roda o bot diretamente no fluxo principal (Corrige o problema de ficar surdo)
     try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-        conv = ConversationHandler(
-            entry_points=[CommandHandler("start", start)],
-            states={
-                LANG:        [MessageHandler(filters.TEXT & ~filters.COMMAND, lang_handler)],
-                EMAIL:       [MessageHandler(filters.TEXT & ~filters.COMMAND, email_handler)],
-                NOME:        [MessageHandler(filters.TEXT & ~filters.COMMAND, nome_handler)],
-                GENERO:      [MessageHandler(filters.TEXT & ~filters.COMMAND, genero_handler)],
-                PRONOMES:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pronomes_handler)],
-                TEMA:        [MessageHandler(filters.TEXT & ~filters.COMMAND, tema_handler)],
-                CONSELHEIRO: [MessageHandler(filters.TEXT & ~filters.COMMAND, conselheiro_handler)],
-                CHAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)],
-            },
-            fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("cancel", cancelar)],
-            allow_reentry=True,
-        )
-
-        app.add_handler(conv)
-        print("Bot True Love AI totalmente operacional e aguardando comandos.")
-        
-        # O pooling nativo assume a Main Thread de forma limpa e segura
-        app.run_polling()
-
+        asyncio.run(iniciar_tudo())
     except Exception as e:
-        logger.error(f"Erro fatal na execução do bot do Telegram: {e}")
+        logger.error(f"Erro crítico na execução principal: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
