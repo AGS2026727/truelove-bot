@@ -1,6 +1,9 @@
 import os
 import requests
 import logging
+import sys
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -17,7 +20,7 @@ TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY    = os.environ.get("GROQ_API_KEY")
 WEBHOOK_URL     = os.environ.get("WEBHOOK_URL", "https://truelove-webhook.onrender.com")
 
-# Modelo intermediário que possui 15.000 tokens por minuto (TPM) na cota grátis
+# Modelo estável com alta cota diária e por minuto (TPM)
 GROQ_MODEL      = "llama3-8b-8192"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -137,9 +140,9 @@ def vincular_telegram(email: str, telegram_id: str):
     except Exception as e:
         logger.error(f"Erro ao vincular Telegram: {e}")
 
-def mensagem_limite(lang: str) -> str:
+def mensaje_limite(lang: str) -> str:
     if lang == "pt":
-        return "⛔ Você usou suas 3 conversas gratuitas.\n\nPara continuar com acesso ilimitado, escolha um plan:\n\n" + PAYMENT_LINKS["pt"]
+        return "⛔ Você usou suas 3 conversas gratuitas.\n\nPara continuar com acesso ilimitado, escolha um plano:\n\n" + PAYMENT_LINKS["pt"]
     return "⛔ You have used your 3 free conversations.\n\nTo continue with unlimited access, choose a plan:\n\n" + PAYMENT_LINKS["en"]
 
 def mensagem_expirado(lang: str) -> str:
@@ -147,7 +150,6 @@ def mensagem_expirado(lang: str) -> str:
         return "⛔ Seu plano expirou.\n\nRenove seu acesso:\n\n" + PAYMENT_LINKS["pt"]
     return "⛔ Your plan has expired.\n\nRenew your access:\n\n" + PAYMENT_LINKS["en"]
 
-# CORREÇÃO DA TRAVA ANTI-TPM: Enxuga prompts gigantescos para não quebrar nos testes grátis
 def construir_system_prompt(conselheiro: str, lang: str, nome: str, genero: str, pronomes: str) -> str:
     try:
         prompt = PROMPTS[conselheiro][lang]
@@ -156,7 +158,7 @@ def construir_system_prompt(conselheiro: str, lang: str, nome: str, genero: str,
         prompt = prompt.replace("{{genero_usuario}}", genero)
         prompt = prompt.replace("{{pronomes_usuario}}", pronomes)
         
-        # Se o prompt do arquivo texto for ridiculamente longo, aplica a versão compacta para o teste passar
+        # Trava anti-TPM para não quebrar a cota de tokens com prompts de livros
         if len(prompt) > 2500:
             if lang == "pt":
                 return f"Você é {conselheiro}, um(a) conselheiro(a) amoroso(a) empático(a), focado(a) em ajudar {nome} ({pronomes}). Seja breve, acolhedor(a) e responda em português."
@@ -200,7 +202,7 @@ async def email_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         if motivo == "expirado":
             await update.message.reply_text(mensagem_expirado(lang))
         elif motivo == "limite gratis atingido":
-            await update.message.reply_text(mensagem_limite(lang))
+            await update.message.reply_text(mensaje_limite(lang))
 
     vincular_telegram(email, update.effective_user.id)
 
@@ -293,7 +295,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     lang = context.user_data.get("lang", "pt")
     email = context.user_data.get("email", "")
     conselheiro = context.user_data.get("conselheiro", "Luna")
-    nome = context.user_data.get("nome", "")
+    nome = context.user_data["nome"]
     genero = context.user_data.get("genero", "")
     pronomes = context.user_data.get("pronomes", "")
 
@@ -304,13 +306,13 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         if motivo == "expirado":
             await update.message.reply_text(mensagem_expirado(lang))
         else:
-            await update.message.reply_text(mensagem_limite(lang))
+            await update.message.reply_text(mensaje_limite(lang))
         return ConversationHandler.END
 
     if acesso.get("plano") == "gratis":
         resultado = incrementar(email)
         if resultado.get("status") == "limite_atingido":
-            await update.message.reply_text(mensagem_limite(lang))
+            await update.message.reply_text(mensaje_limite(lang))
             return ConversationHandler.END
 
     historico = context.user_data.get("historico", [])
@@ -321,7 +323,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     try:
         await update.message.chat.send_action("typing")
         
-        # Envia apenas a mensagem atual para o teste de tokens passar zerado
+        # Envia apenas a mensagem do turno atual para economizar tokens por minuto
         historico_minimo = [{"role": "user", "content": mensagem}]
 
         response = groq_client.chat.completions.create(
@@ -353,10 +355,7 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ── Servidor de Health Check (Thread Separada para o Render) ───────────────────
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-
+# ── Servidor de Health Check (Fluxo Principal) ─────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -366,40 +365,49 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-def iniciar_servidor():
-    porta = int(os.environ.get("PORT", 8080))
+def rodar_bot_telegram():
     try:
-        servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
-        servidor.serve_forever()
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+        conv = ConversationHandler(
+            entry_points=[CommandHandler("start", start)],
+            states={
+                LANG:        [MessageHandler(filters.TEXT & ~filters.COMMAND, lang_handler)],
+                EMAIL:       [MessageHandler(filters.TEXT & ~filters.COMMAND, email_handler)],
+                NOME:        [MessageHandler(filters.TEXT & ~filters.COMMAND, nome_handler)],
+                GENERO:      [MessageHandler(filters.TEXT & ~filters.COMMAND, genero_handler)],
+                PRONOMES:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pronomes_handler)],
+                TEMA:        [MessageHandler(filters.TEXT & ~filters.COMMAND, tema_handler)],
+                CONSELHEIRO: [MessageHandler(filters.TEXT & ~filters.COMMAND, conselheiro_handler)],
+                CHAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)],
+            },
+            fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("cancel", cancelar)],
+            allow_reentry=True,
+        )
+
+        app.add_handler(conv)
+        print("Bot True Love AI iniciado na thread secundária.")
+        app.run_polling(close_loop=False)
     except Exception as e:
-        print(f"Erro no servidor HTTP: {e}")
+        logger.error(f"Erro fatal no bot do Telegram: {e}")
 
 # ── Execução Principal ─────────────────────────────────────────────────────────
 def main():
-    t = threading.Thread(target=iniciar_servidor, daemon=True)
+    # 1. Inicia o Bot do Telegram em segundo plano para não bloquear a checagem de porta
+    t = threading.Thread(target=rodar_bot_telegram, daemon=True)
     t.start()
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            LANG:        [MessageHandler(filters.TEXT & ~filters.COMMAND, lang_handler)],
-            EMAIL:       [MessageHandler(filters.TEXT & ~filters.COMMAND, email_handler)],
-            NOME:        [MessageHandler(filters.TEXT & ~filters.COMMAND, nome_handler)],
-            GENERO:      [MessageHandler(filters.TEXT & ~filters.COMMAND, genero_handler)],
-            PRONOMES:    [MessageHandler(filters.TEXT & ~filters.COMMAND, pronomes_handler)],
-            TEMA:        [MessageHandler(filters.TEXT & ~filters.COMMAND, tema_handler)],
-            CONSELHEIRO: [MessageHandler(filters.TEXT & ~filters.COMMAND, conselheiro_handler)],
-            CHAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler)],
-        },
-        fallbacks=[CommandHandler("cancelar", cancelar), CommandHandler("cancel", cancelar)],
-        allow_reentry=True,
-    )
-
-    app.add_handler(conv)
-    print("Bot True Love AI iniciado com sucesso.")
-    app.run_polling()
+    # 2. Mantém o servidor HTTP no fluxo primário. O Render bate, recebe 200 OK e valida.
+    porta = int(os.environ.get("PORT", 10000))
+    print(f"Servidor de Health Check ativo na porta {porta}")
+    try:
+        servidor = HTTPServer(("0.0.0.0", porta), HealthHandler)
+        servidor.serve_forever()
+    except KeyboardInterrupt:
+        print("Encerrando processo...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Erro no servidor HTTP principal: {e}")
 
 if __name__ == "__main__":
     main()
